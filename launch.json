@@ -1,0 +1,20 @@
+{
+  "kind": "custom_token",
+  "token": {
+    "contract": "SwarmInu",
+    "name": "SwarmInu",
+    "symbol": "SI",
+    "decimals": 18,
+    "constructorArgs": ["$factory", "$poolManager", "$launchNumber"],
+    "totalSupply": "1000000000000000000000000000"
+  },
+  "contracts": [],
+  "pool": {
+    "pairedCurrency": "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+    "fee": 10000,
+    "tickSpacing": 200,
+    "initialPrice": "125270724187523965593206900"
+  },
+  "economics": {"poolBps":8800,"initialMarketCapWei":"2500000000000000000000","remainderTo":"0x66522f25035c3fafd2c6d950a506fda457e06344"},
+  "notes": "SwarmInu mints 1,000,000,000 SI with 18 decimals once to msg.sender in its constructor (address factory_, address poolManager_, uint64 launchNumber_). No application contracts or initialization calls are required. Ordinary transfers pay a fixed 2% fee, rounded down, to 0x66522f25035c3fafd2c6d950a506fda457e06344; this recipient has no administrative powers. Transfers called by, from, or to the factory, and transfers from or to the configured PoolManager, the launch distributor resolved through factory.distributorOf(launchNumber), or the fee recipient are exempt. Direct PoolManager buys and sells therefore pay no token transfer fee. The pool's separate swap fee is 1%. Accepted economics seed a single-sided SI position with 88% of total supply and no IMD deposit, using an opening market cap of 2500000000000000000000 paired-currency minor units. These accepted economics govern instead of the earlier 400 IMD estimate. pool.initialPrice is provenance only: floor(sqrt((2500000000000000000000 / 1000000000000000000000000000) * 2^192)), assuming SI is currency0. The deployer derives the actual opening price and single-sided range from economics.initialMarketCapWei, totalSupply, and the deployed currency ordering."
+}
