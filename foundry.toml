@@ -1,0 +1,21 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+cache_path = "cache"
+libs = ["lib"]
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+# The launch compares deployed bytes without the metadata hash.
+bytecode_hash = "none"
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "v4-core/=lib/v4-core/",
+    "solmate/=lib/solmate/",
+]
+
+[fmt]
+line_length = 120
