@@ -180,17 +180,19 @@ contract SwarmInuTest is Test {
         assertEq(token.balanceOf(FEE_RECIPIENT), 0);
     }
 
-    function test_transfersIntoAndOutOfThePoolManagerAreExact() public {
+    function test_transfersIntoThePoolManagerAreExactAndPayoutsPayTheFee() public {
         factory.move(token, ALICE, 100e18);
 
         vm.prank(ALICE);
         token.transfer(POOL_MANAGER, 100e18);
         assertEq(token.balanceOf(POOL_MANAGER), 100e18, "a sell settles in full");
+        assertEq(token.balanceOf(FEE_RECIPIENT), 0);
 
         vm.prank(POOL_MANAGER);
         token.transfer(BOB, 100e18);
-        assertEq(token.balanceOf(BOB), 100e18, "a buy is paid out in full");
-        assertEq(token.balanceOf(FEE_RECIPIENT), 0);
+        assertEq(token.balanceOf(BOB), 98e18, "a buy is paid net of the fee");
+        assertEq(token.balanceOf(FEE_RECIPIENT), 2e18);
+        assertEq(token.balanceOf(POOL_MANAGER), 0, "the manager is debited the full payout");
     }
 
     function test_transferFromIntoThePoolManagerIsExact() public {
@@ -277,15 +279,13 @@ contract SwarmInuTest is Test {
         factory.setDistributor(LAUNCH, DISTRIBUTOR);
         assertFalse(token.isFeeExempt(ALICE, ALICE, BOB));
         assertFalse(token.isFeeExempt(CAROL, ALICE, BOB));
-        assertFalse(
-            token.isFeeExempt(POOL_MANAGER, ALICE, BOB), "the pool manager is exempt as a party, not as a spender"
-        );
+        assertFalse(token.isFeeExempt(POOL_MANAGER, ALICE, BOB), "the pool manager is only exempt as a recipient");
         assertFalse(token.isFeeExempt(DISTRIBUTOR, ALICE, BOB));
         assertTrue(token.isFeeExempt(address(factory), ALICE, BOB));
         assertTrue(token.isFeeExempt(ALICE, address(factory), BOB));
         assertTrue(token.isFeeExempt(ALICE, ALICE, address(factory)));
         assertTrue(token.isFeeExempt(ALICE, ALICE, POOL_MANAGER));
-        assertTrue(token.isFeeExempt(ALICE, POOL_MANAGER, BOB));
+        assertFalse(token.isFeeExempt(ALICE, POOL_MANAGER, BOB));
         assertTrue(token.isFeeExempt(ALICE, ALICE, DISTRIBUTOR));
         assertTrue(token.isFeeExempt(ALICE, DISTRIBUTOR, BOB));
         assertTrue(token.isFeeExempt(ALICE, ALICE, FEE_RECIPIENT));

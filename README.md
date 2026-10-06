@@ -32,7 +32,7 @@ The launch has flows that must move exactly the amount stated, or the launch is 
 | Exempt | Rule | Why |
 |---|---|---|
 | The factory | caller, sender or recipient is `factory` | funds the distributor, seeds the pool, forwards the remainder |
-| The Uniswap v4 PoolManager | sender or recipient is `poolManager` | v4 credits a payment by balance difference; a short payment reverts the swap |
+| The Uniswap v4 PoolManager | recipient is `poolManager` | v4 credits an incoming payment by balance difference; a short payment can leave the swap unsettled |
 | The launch's MerkleDistributor | sender or recipient is `factory.distributorOf(launchNumber)`, read at transfer time | claims must arrive whole |
 | The fee recipient | sender or recipient is `FEE_RECIPIENT` | paying itself would only emit a second event |
 
@@ -44,23 +44,28 @@ no distributor and charges the fee as usual. The factory can therefore never mak
 misbehaving factory can do is add up to 100,000 gas to a transfer or choose which single address gets the
 distributor's exemption.
 
-### What the fee does not cover — read this before launch
+### PoolManager payouts and fee limits — read this before launch
 
-**Swaps in the Uniswap v4 pool pay no token fee.** Every v4 buy is a transfer out of the PoolManager and every sell is
-a transfer into it, and both are exempt. This is a requirement of the launch path, not a choice: a token that taxes
-the PoolManager cannot be sold into its own pool, and the launch rules refuse a pool flow that arrives short.
+**SI payouts from the PoolManager pay 2%; incoming SI payments are exempt.** This covers buys, liquidity withdrawals,
+flash-accounting relays and ERC-6909 claim redemptions, unless another exemption in the table applies. The manager is
+debited the full payout: the recipient gets `amount - feeOn(amount)` and the fee wallet gets `feeOn(amount)`.
+Direct sells and seeding still credit the PoolManager in full, so its balance-difference settlement succeeds.
 
-Consequences the requester should weigh:
+Consequences for integrations:
 
-1. The 2% is collected on wallet-to-wallet transfers, on transfers into and out of other contracts (v2/v3 pools,
-   bridges, vaults, routers that hold tokens between steps), and on nothing that goes straight to or from the
-   PoolManager.
-2. A holder who wants to avoid the fee can route a transfer through the PoolManager's flash accounting (pay in, take
-   out to another wallet). `test_knownLimit_transferRoutedThroughThePoolManagerPaysNoFee` demonstrates it. This cannot
-   be closed without taxing the PoolManager.
-3. If the intent is a fee on every buy and sell, a transfer tax cannot deliver it on v4 under these launch rules. It
-   would need a pool-level mechanism (a v4 hook that charges on swap), which this launch does not provide: the pool's
-   hook is the network's own initialization guard.
+1. A v4 swap delta or quote describes gross SI output. The buyer receives 2% less, rounded as above. Integrations must
+   check the final recipient's balance increase for minimum-output protection, including for exact-output swaps.
+   The tests exercise direct settlement against the real PoolManager; they do not certify a production router.
+2. A router that takes SI to itself and then forwards to a wallet incurs two token fees: 100 SI gross becomes 98 SI
+   at the router and 96.04 SI at the wallet. Taking directly to the final recipient avoids the extra forwarding fee.
+   A router that forwards the gross quote instead of its actual balance can revert.
+3. Paying SI in and taking it out to another ordinary wallet now pays the fee on withdrawal.
+   `test_transferRoutedThroughThePoolManagerPaysTheFee` covers this relay. ERC-6909 claims can still be transferred
+   without calling SI; redemption to a non-exempt recipient pays the fee, as tested in `test/SwarmInuClaims.t.sol`.
+   The token cannot charge each transfer of a separate claim or wrapper token, or activity entirely inside v4 that
+   does not transfer SI.
+4. Direct sells into the configured PoolManager pay no token fee. Charging every buy and sell would require a
+   separate pool-level mechanism; this token adds no swap hook.
 
 Other things a fee-on-transfer token implies: contracts that assume they receive the amount sent (some vaults, bridges
 and staking contracts) will mis-account SI unless they measure the balance they actually received.
@@ -136,7 +141,7 @@ price rises along the curve as SI leaves the pool.
 
 ## Assumptions
 
-1. The fee applies to transfers; there is no separate buy or sell fee (see the section on what the fee does not cover).
+1. The fee applies to SI transfers, including PoolManager payouts; direct sells into that manager remain exempt.
 2. The fee wallet is fixed forever. If `0x6652…6344` is lost or compromised, fees keep going there; there is no way
    to redirect them.
 3. The factory deploys the token itself, so it receives the supply and is the `factory` argument.
@@ -146,20 +151,27 @@ price rises along the curve as SI leaves the pool.
 
 ## Operational responsibilities
 
-- **Requester:** confirm the reading of the economics above and the consequence that v4 swaps are untaxed; control the
-  key of the fee wallet; confirm the wallet can hold ERC-20s on the launch chain.
+- **Requester:** confirm the reading of the economics above and the consequence that v4 payouts pay the token fee
+  while direct sells do not; control the key of the fee wallet; confirm the wallet can hold ERC-20s on the launch chain.
 - **Network deployer:** resolve `$factory`, `$poolManager`, `$launchNumber`; derive the opening price and range from
-  the manifest; verify the source on the chain's explorer. This repository contains no deploy script, broadcasts
-  nothing and holds no keys.
+  the manifest; verify the source on the chain's explorer. Validate the chosen router's payout routing and minimum-output
+  checks against the net amount received before release. This repository contains no deploy script, broadcasts nothing
+  and holds no keys.
 - **Reviewer:** the tests here are not an audit. The token takes a fee from other people's transfers and should get an
   independent adversarial review before release.
 
 ## Trust
 
 - The fee recipient receives 2% of ordinary transfers and has no other power.
-- The factory is trusted for one thing: naming the distributor. If the factory is upgradeable or its record can be
-  changed, whoever controls it can move the distributor's fee exemption to another address. It cannot mint, move
-  balances, block transfers or change the fee.
+- The factory names the distributor live on each applicable transfer. If the factory is upgradeable or its record can
+  be changed, whoever controls it can move the distributor's fee exemption to another address. Removing the real
+  distributor's exemption makes its subsequent claims pay the fee. The token does not latch or require code at that
+  address; the deployer must verify the factory's record management.
+- The factory is also exempt as a `transferFrom` operator, so it can move any approved amount to a chosen recipient
+  without a fee. It still needs the holder's allowance and cannot move unapproved balances, mint, block transfers or
+  change the fee. The deployer must verify the factory's allowance-consuming entry points; the token does not restrict
+  who can call them. `test_factoryAsSpenderMovesExactAmounts` and `test_exemptionFollowsTheFactorysCurrentAnswer`
+  demonstrate these trust assumptions.
 - Nobody can pause the token or freeze, seize or burn a holder's balance.
 
 ## Building and testing
@@ -178,8 +190,11 @@ No environment variables, network access, `ffi` or filesystem access are used.
   runtime for `DELEGATECALL`, `CALLCODE` and `SELFDESTRUCT`.
 - `test/SwarmInuLaunch.t.sol` — the launch against a real Uniswap v4 `PoolManager` with the IMD stand-in sorted on
   either side: the swarm's share and a claim arrive whole, the pool opens at the 400 IMD price, 90% of the supply seeds
-  it with no IMD, a trader buys and sells exact amounts, bought tokens pay the fee when moved on; and the failures: a
-  range that would need IMD, a seed larger than the factory's balance, selling more than held, buying with no IMD.
+  it with no IMD, a trader receives the buy net of the fee and sells its entire balance, bought tokens pay another fee
+  when forwarded, and relaying through the PoolManager pays the fee; and the failures: a range that would need IMD,
+  a seed larger than the factory's balance, selling more than held, buying with no IMD.
+- `test/SwarmInuClaims.t.sol` — a real PoolManager with no pool: SI is wrapped into ERC-6909 claims, claims change hands,
+  redemption pays the fee, and excessive or repeated redemptions revert without moving SI.
 - `test/utils/` — mocks of the factory, a plain pair token, a trader, and the launch arithmetic. Test scaffolding only;
   the real factory, distributor and pool hook are the network's and are not reproduced here.
 

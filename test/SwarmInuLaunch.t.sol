@@ -119,11 +119,11 @@ contract SwarmInuLaunchTest is Test {
 
     // ---------------------------------------------------------------- trading
 
-    function test_traderBuysAndSellsExactly_tokenAsCurrency0() public {
+    function test_traderBuysNetOfFeeAndSellsAll_tokenAsCurrency0() public {
         _assertBuyAndSell(_launch(HIGH_PAIR));
     }
 
-    function test_traderBuysAndSellsExactly_tokenAsCurrency1() public {
+    function test_traderBuysNetOfFeeAndSellsAll_tokenAsCurrency1() public {
         _assertBuyAndSell(_launch(LOW_PAIR));
     }
 
@@ -132,32 +132,37 @@ contract SwarmInuLaunchTest is Test {
         l.imd.mint(address(trader), 10e18);
         bool buyIsZeroForOne = !l.tokenIsCurrency0;
 
-        // Buy: 0.01 IMD in, SI out. The pool manager pays out exactly the swap's delta.
+        // Buy: 0.01 IMD in, SI out. The manager pays the gross delta, split between trader and fee recipient.
         BalanceDelta buy = trader.swap(l.key, buyIsZeroForOne, -0.01e18);
-        uint256 bought = uint256(int256(l.tokenIsCurrency0 ? buy.amount0() : buy.amount1()));
+        uint256 gross = uint256(int256(l.tokenIsCurrency0 ? buy.amount0() : buy.amount1()));
+        uint256 fee = l.token.feeOn(gross);
+        uint256 bought = gross - fee;
         assertGt(bought, 0);
-        assertEq(l.token.balanceOf(address(trader)), bought, "the buy arrived whole");
+        assertEq(l.token.balanceOf(address(trader)), bought, "the buy arrived net of the fee");
+        assertEq(l.token.balanceOf(FEE_RECIPIENT), fee);
+        assertEq(l.token.balanceOf(address(manager)), l.seeded - gross);
         assertEq(l.imd.balanceOf(address(trader)), 10e18 - 0.01e18);
         assertEq(l.imd.balanceOf(address(manager)), 0.01e18);
 
         // At a 400 IMD cap one SI costs 4e-7 IMD. The seeded range starts within one tick spacing (2.02%) above
         // that, and the pool keeps its 1% fee, so 0.01 IMD buys a little under 25,000 SI.
-        assertLt(bought, 25_000e18);
-        assertGt(bought, 24_000e18);
+        assertLt(gross, 25_000e18);
+        assertGt(gross, 24_000e18);
 
         // Sell everything back: the pool manager is credited exactly what the trader sends.
         BalanceDelta sell = trader.swap(l.key, !buyIsZeroForOne, -int256(bought));
         uint256 received = uint256(int256(l.tokenIsCurrency0 ? sell.amount1() : sell.amount0()));
         assertEq(l.token.balanceOf(address(trader)), 0, "the sell left nothing behind");
         assertGt(received, 0);
-        assertLt(received, 0.01e18, "a round trip costs the pool's fee twice");
+        assertLt(received, 0.01e18, "a round trip costs the buy's token fee and the pool's fee twice");
         assertEq(l.imd.balanceOf(address(trader)), 10e18 - 0.01e18 + received);
 
-        assertEq(l.token.balanceOf(FEE_RECIPIENT), 0, "swaps against the pool manager pay no token fee");
+        assertEq(l.token.balanceOf(FEE_RECIPIENT), fee, "the sell adds no token fee");
         assertEq(
-            l.token.balanceOf(address(manager)) + l.token.balanceOf(DISTRIBUTOR) + l.token.balanceOf(address(factory)),
+            l.token.balanceOf(address(manager)) + l.token.balanceOf(DISTRIBUTOR) + l.token.balanceOf(address(factory))
+                + l.token.balanceOf(FEE_RECIPIENT),
             SUPPLY,
-            "every token is back where the launch put it"
+            "every token is accounted for after the round trip"
         );
         assertEq(l.token.totalSupply(), SUPPLY);
     }
@@ -168,12 +173,14 @@ contract SwarmInuLaunchTest is Test {
         l.imd.mint(address(trader), 1e18);
         trader.swap(l.key, !l.tokenIsCurrency0, -0.01e18);
         uint256 bought = l.token.balanceOf(address(trader));
+        uint256 buyFee = l.token.balanceOf(FEE_RECIPIENT);
+        assertGt(buyFee, 0);
 
         trader.send(address(l.token), BOB, bought);
 
         uint256 fee = (bought * 200) / 10_000;
         assertEq(l.token.balanceOf(BOB), bought - fee);
-        assertEq(l.token.balanceOf(FEE_RECIPIENT), fee);
+        assertEq(l.token.balanceOf(FEE_RECIPIENT), buyFee + fee, "buy and forwarding each pay the fee");
     }
 
     function test_buyingRaisesThePrice() public {
@@ -191,9 +198,8 @@ contract SwarmInuLaunchTest is Test {
         assertGt(sqrtPrice, l.sqrtPrice);
     }
 
-    /// @dev A documented limit, not a feature: because the pool manager must be exempt for swaps to settle, a
-    /// holder who pays tokens into it and takes them out to another wallet moves them without the fee.
-    function test_knownLimit_transferRoutedThroughThePoolManagerPaysNoFee() public {
+    /// @dev Paying tokens in and taking them out to another wallet must still pay the fee on the payout.
+    function test_transferRoutedThroughThePoolManagerPaysTheFee() public {
         Launch memory l = _launch(HIGH_PAIR);
         PoolManagerRelay relay = new PoolManagerRelay(manager);
         // Funded from the distributor, so the relay starts with a round amount.
@@ -202,8 +208,10 @@ contract SwarmInuLaunchTest is Test {
 
         relay.relay(Currency.wrap(address(l.token)), BOB, 100e18);
 
-        assertEq(l.token.balanceOf(BOB), 100e18);
-        assertEq(l.token.balanceOf(FEE_RECIPIENT), 0);
+        assertEq(l.token.balanceOf(BOB), 98e18);
+        assertEq(l.token.balanceOf(FEE_RECIPIENT), 2e18);
+        assertEq(l.token.balanceOf(address(manager)), l.seeded, "the relay leaves pool reserves unchanged");
+        assertEq(l.token.balanceOf(address(relay)), 0);
     }
 
     // ---------------------------------------------------------------- failures

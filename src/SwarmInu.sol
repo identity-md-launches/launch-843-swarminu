@@ -12,8 +12,8 @@ interface IProjectFactory {
 /// @notice Fixed-supply ERC-20 with a 2% transfer fee paid to a fixed recipient.
 /// @dev The whole supply is minted once, to the deployer, in the constructor; there is no mint, burn, owner, pause
 /// or blacklist afterwards. The fee is skipped for the launch flows that must move exact amounts: anything the
-/// factory moves, anything into or out of the Uniswap v4 PoolManager, and anything into or out of the launch's
-/// MerkleDistributor. Every other transfer pays the fee.
+/// factory moves, payments into the Uniswap v4 PoolManager, and anything into or out of the launch's
+/// MerkleDistributor. PoolManager payouts pay the fee unless another exemption applies.
 contract SwarmInu is ERC20 {
     /// @notice 1,000,000,000 SI with 18 decimals.
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000e18;
@@ -33,7 +33,7 @@ contract SwarmInu is ERC20 {
     /// @notice The launch factory. Exempt as caller, sender and recipient.
     address public immutable factory;
 
-    /// @notice The Uniswap v4 PoolManager. Exempt as sender and recipient, so pool flows settle exactly.
+    /// @notice The Uniswap v4 PoolManager. Exempt as recipient so incoming payments settle exactly.
     address public immutable poolManager;
 
     /// @notice The launch this token belongs to; the key of its distributor on the factory.
@@ -69,7 +69,8 @@ contract SwarmInu is ERC20 {
     /// @notice Whether a transfer of `from`'s tokens to `to`, submitted by `operator`, skips the fee.
     function isFeeExempt(address operator, address from, address to) public view returns (bool) {
         if (operator == factory || from == factory || to == factory) return true;
-        if (from == poolManager || to == poolManager) return true;
+        // Incoming payments must settle in full. Tax payouts to cover buys, relays and claim redemptions.
+        if (to == poolManager) return true;
         // The recipient paying itself a fee would only add a second event.
         if (from == FEE_RECIPIENT || to == FEE_RECIPIENT) return true;
         address distributor_ = distributor();
